@@ -6,6 +6,10 @@ This project is pre-1.0. Breaking changes may appear in minor or patch releases 
 
 ## Unreleased
 
+### Fixed
+
+- Post-type entry templates (e.g. a blog post) now render their own `seoTitle`, `seoDescription`, and a `BlogPosting` JSON-LD block from `pubDate`/`updatedDate` — previously the publisher only ever emitted the site-wide `metaTitle`/`metaDescription` (or nothing, for structured data), so a row's own SEO fields were silently invisible on the published page regardless of what was set in the CMS.
+
 ### Testing
 
 - Fixed a test-order-dependent flake in `canvasFormControls.test.tsx` — the test never asserted its own `canvasView: 'design'` precondition, so it silently inherited whatever state the previous test file left on the shared `useEditorStore` singleton. Same bug class as the one partially fixed for `canvasFrameMounting.test.tsx` in an earlier release; this time the test asserts its own precondition directly instead of relying on every other file's cleanup being complete.

@@ -147,6 +147,13 @@ interface PublishPageOptions {
    * HTML representation the agent targets nodes through.
    */
   annotateNodeIds?: boolean
+  /**
+   * Per-entry SEO overrides (title/description/dates) for a CMS post-type
+   * render — a blog post's own `seoTitle`/`seoDescription`/`pubDate` cells,
+   * threaded in by `renderPublishedDataRowTemplate`. Absent for ordinary
+   * pages, which render exactly as before.
+   */
+  entryMeta?: EntryMetaOverrides
 }
 
 /**
@@ -297,9 +304,35 @@ function bodyHtmlAttributes(value: unknown): string {
 }
 
 /**
- * `<head>` metadata tags derived from site settings + page.
+ * Per-entry SEO overrides, supplied when publishing a CMS row through an
+ * entry template (e.g. a blog post). Absent for ordinary pages, which fall
+ * back to site-wide settings exactly as before.
+ */
+export interface EntryMetaOverrides {
+  /** Row-level SEO title. Wins over `settings.metaTitle` — a post's own
+   *  title is more specific than the site-wide default. */
+  seoTitle?: string
+  /** Row-level SEO description. There is no row-level fallback today, so
+   *  this is the ONLY way a post gets its own `<meta name="description">` —
+   *  `settings.metaDescription` is a single site-wide value. */
+  seoDescription?: string
+  /** ISO 8601 date/datetime. Presence is what triggers JSON-LD emission. */
+  datePublished?: string
+  dateModified?: string
+  /** BlogPosting `headline`. Defaults to the resolved page title. */
+  headline?: string
+}
+
+/**
+ * `<head>` metadata tags derived from site settings + page (+ optional
+ * per-entry overrides for CMS post-type renders).
  *
- * - `title` falls back through metaTitle → page.title → site.name.
+ * - `title` falls back through entryMeta.seoTitle → metaTitle → page.title
+ *   → site.name.
+ * - `description` falls back through entryMeta.seoDescription →
+ *   settings.metaDescription (no row-level fallback existed before this).
+ * - `structuredData` is empty unless `entryMeta.datePublished` is set —
+ *   ordinary pages never had dates to publish and keep emitting nothing.
  * - URL-typed settings (faviconUrl) are validated by
  *   isSafeUrl() (blocks `javascript:` / `vbscript:` schemes) and then
  *   escapeHtml()'d for safe attribute interpolation.
@@ -311,22 +344,45 @@ interface DocumentMetaTags {
   metaDesc: string
   favicon: string
   langAttr: string
+  structuredData: string
 }
 
-function buildDocumentMetaTags(site: SiteDocument, page: Page): DocumentMetaTags {
+/** Escapes `<` so `</script>` can't break out of the JSON-LD block — the
+ * one character JSON.stringify doesn't escape that HTML parsing cares about. */
+function jsonLdSafe(value: unknown): string {
+  return JSON.stringify(value).replace(/</g, '\\u003c')
+}
+
+function buildDocumentMetaTags(
+  site: SiteDocument,
+  page: Page,
+  entryMeta?: EntryMetaOverrides,
+): DocumentMetaTags {
   const { settings } = site
-  const metaDesc = settings.metaDescription
-    ? `\n  <meta name="description" content="${escapeHtml(settings.metaDescription)}">`
+  const description = entryMeta?.seoDescription ?? settings.metaDescription
+  const metaDesc = description
+    ? `\n  <meta name="description" content="${escapeHtml(description)}">`
     : ''
   const favicon =
     settings.faviconUrl && isSafeUrl(settings.faviconUrl)
       ? `\n  <link rel="icon" href="${escapeHtml(settings.faviconUrl)}">`
       : ''
+  const resolvedTitle = entryMeta?.seoTitle ?? settings.metaTitle ?? page.title ?? site.name
+  const structuredData = entryMeta?.datePublished
+    ? `\n  <script type="application/ld+json">${jsonLdSafe({
+        '@context': 'https://schema.org',
+        '@type': 'BlogPosting',
+        headline: entryMeta.headline ?? resolvedTitle,
+        datePublished: entryMeta.datePublished,
+        ...(entryMeta.dateModified ? { dateModified: entryMeta.dateModified } : {}),
+      })}</script>`
+    : ''
   return {
-    pageTitle: escapeHtml(settings.metaTitle ?? page.title ?? site.name),
+    pageTitle: escapeHtml(resolvedTitle),
     metaDesc,
     favicon,
     langAttr: escapeHtml(settings.language ?? 'en'),
+    structuredData,
   }
 }
 
@@ -440,6 +496,7 @@ interface AssembledDocumentParts {
   pageTitle: string
   metaDesc: string
   favicon: string
+  structuredData: string
   styleHeadHtml: string
   importmapTag: string
   headRuntimeScripts: string
@@ -458,7 +515,7 @@ function assembleHtmlDocument(parts: AssembledDocumentParts): string {
     `<head>\n` +
     `  <meta charset="UTF-8">\n` +
     `  <meta name="viewport" content="width=device-width, initial-scale=1.0">${parts.csp}\n` +
-    `  <title>${parts.pageTitle}</title>${parts.metaDesc}${parts.favicon}\n` +
+    `  <title>${parts.pageTitle}</title>${parts.metaDesc}${parts.favicon}${parts.structuredData}\n` +
     parts.styleHeadHtml +
     lineOrEmpty(parts.importmapTag) +
     lineOrEmpty(parts.headRuntimeScripts) +
@@ -555,7 +612,7 @@ export function publishPage(
     acc.cssMap,
   )
 
-  const meta = buildDocumentMetaTags(site, page)
+  const meta = buildDocumentMetaTags(site, page, options.entryMeta)
   const runtime = buildRuntimeAssetsBlock(options, acc)
   const csp = buildContentSecurityPolicy(runtime.anyScriptTag, runtime.importmap, acc.cspSources)
 
@@ -565,6 +622,7 @@ export function publishPage(
     pageTitle: meta.pageTitle,
     metaDesc: meta.metaDesc,
     favicon: meta.favicon,
+    structuredData: meta.structuredData,
     styleHeadHtml,
     importmapTag: runtime.importmapTag,
     headRuntimeScripts: runtime.headRuntimeScripts,

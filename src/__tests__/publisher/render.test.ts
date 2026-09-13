@@ -7,6 +7,7 @@ import {
   publishPage,
   type RenderConfig,
   type RenderAccumulators,
+  type EntryMetaOverrides,
 } from '@core/publisher'
 import type { ModuleDefinition, PropertySchema } from '@core/module-engine'
 import {
@@ -1029,5 +1030,107 @@ describe('publishPage', () => {
     const { html } = publishPage(page, proj, registry)
     expect(html).not.toContain('<script>')
     expect(html).toContain('&lt;script&gt;')
+  })
+
+  // ─── entryMeta overrides (row-level SEO title/description/JSON-LD) ────────
+
+  it('entryMeta.seoTitle wins over site metaTitle', () => {
+    const proj = makeSite({
+      settings: { ...makeSite().settings, metaTitle: 'Site Default Title' },
+    })
+    const page = makePage({ root: { moduleId: 'base.text', props: { text: 'Hi' } } })
+    const entryMeta: EntryMetaOverrides = { seoTitle: 'My Post SEO Title' }
+    const { html } = publishPage(page, proj, registry, { entryMeta })
+    expect(html).toContain('<title>My Post SEO Title</title>')
+    expect(html).not.toContain('Site Default Title')
+  })
+
+  it('falls back to page.title when entryMeta has no seoTitle', () => {
+    const page = makePage({ root: { moduleId: 'base.text', props: { text: 'Hi' } } })
+    const { html } = publishPage(page, site, registry, { entryMeta: {} })
+    expect(html).toContain('<title>Test Page</title>')
+  })
+
+  it('entryMeta.seoDescription renders a meta description tag', () => {
+    const page = makePage({ root: { moduleId: 'base.text', props: { text: 'Hi' } } })
+    const entryMeta: EntryMetaOverrides = { seoDescription: 'A post about testing.' }
+    const { html } = publishPage(page, site, registry, { entryMeta })
+    expect(html).toContain('<meta name="description" content="A post about testing.">')
+  })
+
+  it('entryMeta.seoDescription wins over site metaDescription', () => {
+    const proj = makeSite({
+      settings: { ...makeSite().settings, metaDescription: 'Site-wide description' },
+    })
+    const page = makePage({ root: { moduleId: 'base.text', props: { text: 'Hi' } } })
+    const entryMeta: EntryMetaOverrides = { seoDescription: 'Row-level description' }
+    const { html } = publishPage(page, proj, registry, { entryMeta })
+    expect(html).toContain('<meta name="description" content="Row-level description">')
+    expect(html).not.toContain('Site-wide description')
+  })
+
+  it('no meta description tag when neither entryMeta nor site settings provide one', () => {
+    const page = makePage({ root: { moduleId: 'base.text', props: { text: 'Hi' } } })
+    const { html } = publishPage(page, site, registry)
+    expect(html).not.toContain('<meta name="description"')
+  })
+
+  it('XSS: escapes entryMeta.seoTitle and seoDescription', () => {
+    const page = makePage({ root: { moduleId: 'base.text', props: { text: 'Hi' } } })
+    const entryMeta: EntryMetaOverrides = {
+      seoTitle: '<script>alert(1)</script>',
+      seoDescription: '"><script>alert(2)</script>',
+    }
+    const { html } = publishPage(page, site, registry, { entryMeta })
+    expect(html).not.toContain('<script>alert(1)')
+    expect(html).not.toContain('<script>alert(2)')
+    expect(html).toContain('&lt;script&gt;alert(1)')
+  })
+
+  it('emits BlogPosting JSON-LD when entryMeta.datePublished is set', () => {
+    const page = makePage({ root: { moduleId: 'base.text', props: { text: 'Hi' } } })
+    const entryMeta: EntryMetaOverrides = {
+      seoTitle: 'My Post',
+      datePublished: '2026-09-11',
+      dateModified: '2026-09-12',
+    }
+    const { html } = publishPage(page, site, registry, { entryMeta })
+    expect(html).toContain('<script type="application/ld+json">')
+    expect(html).toContain('"@type":"BlogPosting"')
+    expect(html).toContain('"headline":"My Post"')
+    expect(html).toContain('"datePublished":"2026-09-11"')
+    expect(html).toContain('"dateModified":"2026-09-12"')
+  })
+
+  it('omits dateModified from JSON-LD when not provided', () => {
+    const page = makePage({ root: { moduleId: 'base.text', props: { text: 'Hi' } } })
+    const entryMeta: EntryMetaOverrides = { datePublished: '2026-09-11' }
+    const { html } = publishPage(page, site, registry, { entryMeta })
+    expect(html).toContain('"datePublished":"2026-09-11"')
+    expect(html).not.toContain('dateModified')
+  })
+
+  it('emits no JSON-LD when entryMeta.datePublished is absent (ordinary pages unaffected)', () => {
+    const page = makePage({ root: { moduleId: 'base.text', props: { text: 'Hi' } } })
+    const { html } = publishPage(page, site, registry)
+    expect(html).not.toContain('application/ld+json')
+  })
+
+  it('JSON-LD headline falls back to the resolved title when entryMeta.headline is absent', () => {
+    const page = makePage({ root: { moduleId: 'base.text', props: { text: 'Hi' } } })
+    const entryMeta: EntryMetaOverrides = { seoTitle: 'Resolved Title', datePublished: '2026-09-11' }
+    const { html } = publishPage(page, site, registry, { entryMeta })
+    expect(html).toContain('"headline":"Resolved Title"')
+  })
+
+  it('XSS: JSON-LD escapes "<" so a malicious field cannot close the script tag', () => {
+    const page = makePage({ root: { moduleId: 'base.text', props: { text: 'Hi' } } })
+    const entryMeta: EntryMetaOverrides = {
+      headline: '</script><script>alert(1)</script>',
+      datePublished: '2026-09-11',
+    }
+    const { html } = publishPage(page, site, registry, { entryMeta })
+    expect(html).not.toContain('</script><script>alert(1)</script>')
+    expect(html).toContain('\\u003c/script>\\u003cscript>alert(1)\\u003c/script>')
   })
 })
