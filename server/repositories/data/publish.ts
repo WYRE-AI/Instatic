@@ -128,6 +128,12 @@ export function previousRouteChanged(previous: PreviousPublishedRoute, currentSl
 /**
  * Transactional write of one row publish. DB writes only — the publish lock,
  * artefact bake, and cache bump are owned by `server/publish/publishRow.ts`.
+ *
+ * `published_at` is stamped only on the FIRST publish (when it is currently
+ * null) and preserved on every later republish — republishing an already-
+ * published row (e.g. after an edit) bumps `updated_at` but must not move
+ * `published_at`, since post-type loops sort on it and a moved timestamp
+ * silently reorders the index regardless of true editorial date.
  */
 export async function persistDataRowPublish(
   db: DbClient,
@@ -168,7 +174,7 @@ export async function persistDataRowPublish(
       set status = 'published',
           active_version_id = ${versionId},
           published_by_user_id = ${publisherUserId},
-          published_at = current_timestamp,
+          published_at = coalesce(published_at, current_timestamp),
           updated_by_user_id = ${publisherUserId},
           updated_at = current_timestamp
       where id = ${row.id}
