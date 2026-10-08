@@ -12,6 +12,8 @@ This project is pre-1.0. Breaking changes may appear in minor or patch releases 
 
 - `persistDataRowPublish` now stamps `published_at` only on a row's first publish and preserves it on every later republish — previously every publish call (including republishing an already-published row after an unrelated edit, e.g. an SEO-field fix) reset `published_at = current_timestamp` unconditionally. Since post-type loops sort `desc` on `published_at`, this silently reordered the index on every edit-triggered republish: two live incidents from the same root cause on 2026-09-13 — several tied-`published_at` rows resolving to arbitrary insertion order, then several months-old posts jumping to the top of the blog index purely because they happened to be republished last in an unrelated batch. `createdAt`/`updatedAt` already track creation and last-edit time respectively, so this does not lose any information — it just stops overloading `published_at` as a second `updatedAt`. An explicit admin override for deliberate backdating is intentionally out of scope for this fix (tracked separately).
 
+## 0.0.18 - 2026-09-08
+
 ### Testing
 
 - Fixed a test-order-dependent flake in `canvasFormControls.test.tsx` — the test never asserted its own `canvasView: 'design'` precondition, so it silently inherited whatever state the previous test file left on the shared `useEditorStore` singleton. Same bug class as the one partially fixed for `canvasFrameMounting.test.tsx` in an earlier release; this time the test asserts its own precondition directly instead of relying on every other file's cleanup being complete.
