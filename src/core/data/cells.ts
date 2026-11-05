@@ -146,6 +146,8 @@ export function readSeoDescriptionCell(cells: DataRowCells): string {
  * Content editor's Live mode) hand the result to `publishPage` as
  * `documentMeta`, so publish and preview stay in parity.
  *
+ * `pubDate` / `updatedDate` feed the BlogPosting JSON-LD block.
+ *
  * A blank field is omitted rather than returned empty, so it falls through
  * to the site-level `metaTitle` / `metaDescription` exactly as before.
  *
@@ -155,12 +157,21 @@ export function readSeoDescriptionCell(cells: DataRowCells): string {
 export function readEntrySeoOverride(cells: DataRowCells): {
   title?: string
   description?: string
+  datePublished?: string
+  dateModified?: string
 } {
   const title = readSeoTitleCell(cells).trim()
   const description = readSeoDescriptionCell(cells).trim()
+  // `pubDate` / `updatedDate` are bespoke fields on blog-style tables, not
+  // the CMS's own `publishedAt` / `updatedAt`. Their presence drives the
+  // BlogPosting JSON-LD block.
+  const datePublished = readStringCell(cells, 'pubDate').trim()
+  const dateModified = readStringCell(cells, 'updatedDate').trim()
   return {
     ...(title ? { title } : {}),
     ...(description ? { description } : {}),
+    ...(datePublished ? { datePublished } : {}),
+    ...(dateModified ? { dateModified } : {}),
   }
 }
 

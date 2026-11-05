@@ -1100,4 +1100,47 @@ describe('publishPage', () => {
     expect(html).not.toContain('<script>alert(1)')
     expect(html).toContain('<title>&lt;script&gt;alert(1)&lt;/script&gt;&quot;</title>')
   })
+
+  // ─── documentMeta BlogPosting JSON-LD ─────────────────────────────────────
+
+  const ldPage = () => makePage({ root: { moduleId: 'base.text', props: { text: 'Hi' } } })
+
+  it('emits BlogPosting JSON-LD when documentMeta.datePublished is set', () => {
+    const documentMeta = { title: 'My Post', datePublished: '2026-09-11', dateModified: '2026-09-12' }
+    const { html } = publishPage(ldPage(), site, registry, { documentMeta })
+    expect(html).toContain('<script type="application/ld+json">')
+    expect(html).toContain('"@type":"BlogPosting"')
+    expect(html).toContain('"headline":"My Post"')
+    expect(html).toContain('"datePublished":"2026-09-11"')
+    expect(html).toContain('"dateModified":"2026-09-12"')
+  })
+
+  it('omits dateModified from JSON-LD when not provided', () => {
+    const { html } = publishPage(ldPage(), site, registry, {
+      documentMeta: { datePublished: '2026-09-11' },
+    })
+    expect(html).toContain('"datePublished":"2026-09-11"')
+    expect(html).not.toContain('dateModified')
+  })
+
+  it('emits no JSON-LD when datePublished is absent', () => {
+    const { html } = publishPage(ldPage(), site, registry, { documentMeta: { title: 'T' } })
+    expect(html).not.toContain('application/ld+json')
+    expect(publishPage(ldPage(), site, registry).html).not.toContain('application/ld+json')
+  })
+
+  it('JSON-LD headline falls back to the page title', () => {
+    const { html } = publishPage(ldPage(), site, registry, {
+      documentMeta: { datePublished: '2026-09-11' },
+    })
+    expect(html).toContain('"headline":"Test Page"')
+  })
+
+  it('XSS: JSON-LD escapes "<" so a field cannot close the script tag', () => {
+    const { html } = publishPage(ldPage(), site, registry, {
+      documentMeta: { headline: '</script><script>alert(1)</script>', datePublished: '2026-09-11' },
+    })
+    expect(html).not.toContain('</script><script>alert(1)</script>')
+    expect(html).toContain('\\u003c/script>\\u003cscript>alert(1)\\u003c/script>')
+  })
 })

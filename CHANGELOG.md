@@ -14,6 +14,7 @@ This project is pre-1.0. Breaking changes may appear in minor or patch releases 
 
 ### Bug fixes
 
+- Post-type entries emit a `BlogPosting` JSON-LD block (from the row's `pubDate`/`updatedDate`) in the published and previewed `<head>`, restored on top of the `documentMeta` override (WYRE fork).
 - Applying or removing a class from the Selectors panel now affects every selected element, not only the last one clicked, and the whole change undoes in one step.
 - The `Esc` keycap at the bottom of the Settings panel closes it when clicked. It used to animate and do nothing.
 - Importing a site whose stylesheet, script, and image links carry a cache-busting query such as `?v=8f3a1c` now finds those files. They were reported missing and their styles and colour tokens were dropped.

@@ -32,6 +32,13 @@ describe('stripPostTypeBuiltInCells', () => {
 })
 
 describe('readEntrySeoOverride', () => {
+  it('readEntrySeoOverride carries pubDate/updatedDate as datePublished/dateModified', () => {
+    expect(
+      readEntrySeoOverride({ pubDate: '2026-09-11', updatedDate: ' 2026-09-12 ' }),
+    ).toEqual({ datePublished: '2026-09-11', dateModified: '2026-09-12' })
+    expect(readEntrySeoOverride({ pubDate: '  ' })).toEqual({})
+  })
+
   it('returns both authored SEO fields', () => {
     expect(
       readEntrySeoOverride({ title: 'Plain Title', seoTitle: 'SEO Title', seoDescription: 'SEO Desc' }),

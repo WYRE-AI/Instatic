@@ -175,6 +175,12 @@ interface PublishPageOptions {
 export interface DocumentMetaOverride {
   title?: string
   description?: string
+  /** ISO 8601 date/datetime. Its presence is what triggers the
+   *  `BlogPosting` JSON-LD block; ordinary pages emit none. */
+  datePublished?: string
+  dateModified?: string
+  /** BlogPosting `headline`. Defaults to the resolved `<title>` text. */
+  headline?: string
 }
 
 /**
@@ -341,6 +347,8 @@ function bodyHtmlAttributes(value: unknown): string {
  *   fallback chain picks the raw value first; a token that resolves empty
  *   does NOT re-trigger the fallback — authors opt into fallbacks with the
  *   token's own `{...|fallback}` syntax.
+ * - `structuredData` is empty unless `documentMeta.datePublished` is set —
+ *   ordinary pages never had dates to publish and keep emitting nothing.
  * - URL-typed settings (faviconUrl) are validated by
  *   isSafeUrl() (blocks `javascript:` / `vbscript:` schemes) and then
  *   escapeHtml()'d for safe attribute interpolation.
@@ -352,6 +360,13 @@ interface DocumentMetaTags {
   metaDesc: string
   favicon: string
   langAttr: string
+  structuredData: string
+}
+
+/** Escapes `<` so `</script>` can't break out of the JSON-LD block — the
+ * one character JSON.stringify doesn't escape that HTML parsing cares about. */
+function jsonLdSafe(value: unknown): string {
+  return JSON.stringify(value).replace(/</g, '\\u003c')
 }
 
 function buildDocumentMetaTags(
@@ -370,13 +385,25 @@ function buildDocumentMetaTags(
     settings.faviconUrl && isSafeUrl(settings.faviconUrl)
       ? `\n  <link rel="icon" href="${escapeHtml(settings.faviconUrl)}">`
       : ''
+  const resolvedTitle = interpolateTokens(
+    override.title || (settings.metaTitle ?? page.title ?? site.name),
+    context,
+  )
+  const structuredData = override.datePublished
+    ? `\n  <script type="application/ld+json">${jsonLdSafe({
+        '@context': 'https://schema.org',
+        '@type': 'BlogPosting',
+        headline: override.headline ?? resolvedTitle,
+        datePublished: override.datePublished,
+        ...(override.dateModified ? { dateModified: override.dateModified } : {}),
+      })}</script>`
+    : ''
   return {
-    pageTitle: escapeHtml(
-      interpolateTokens(override.title || (settings.metaTitle ?? page.title ?? site.name), context),
-    ),
+    pageTitle: escapeHtml(resolvedTitle),
     metaDesc,
     favicon,
     langAttr: escapeHtml(settings.language ?? 'en'),
+    structuredData,
   }
 }
 
@@ -490,6 +517,7 @@ interface AssembledDocumentParts {
   pageTitle: string
   metaDesc: string
   favicon: string
+  structuredData: string
   styleHeadHtml: string
   importmapTag: string
   headRuntimeScripts: string
@@ -508,7 +536,7 @@ function assembleHtmlDocument(parts: AssembledDocumentParts): string {
     `<head>\n` +
     `  <meta charset="UTF-8">\n` +
     `  <meta name="viewport" content="width=device-width, initial-scale=1.0">${parts.csp}\n` +
-    `  <title>${parts.pageTitle}</title>${parts.metaDesc}${parts.favicon}\n` +
+    `  <title>${parts.pageTitle}</title>${parts.metaDesc}${parts.favicon}${parts.structuredData}\n` +
     parts.styleHeadHtml +
     lineOrEmpty(parts.importmapTag) +
     lineOrEmpty(parts.headRuntimeScripts) +
@@ -622,6 +650,7 @@ export function publishPage(
     pageTitle: meta.pageTitle,
     metaDesc: meta.metaDesc,
     favicon: meta.favicon,
+    structuredData: meta.structuredData,
     styleHeadHtml,
     importmapTag: runtime.importmapTag,
     headRuntimeScripts: runtime.headRuntimeScripts,
