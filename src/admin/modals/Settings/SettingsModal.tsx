@@ -4,8 +4,8 @@
  * Shares the visual language of the Spotlight palette and the Module
  * Inserter: a direct-token panel shell, an `--bg-surface-2` rail with
  * categorical accent icon chips, an accent-bar section header, and a
- * shared `Esc` keycap affordance (backdrop click / Esc both close — there
- * is no dedicated close button, matching the other two modals).
+ * shared `Esc` keycap affordance, which is also the close button — backdrop
+ * click and Esc close it too.
  *
  * Guideline #225 (Modal Shell Requirements, WCAG 2.1 AA):
  * - role="dialog" + aria-modal="true" + aria-labelledby
@@ -16,7 +16,7 @@
  *
  * data-testid="settings-modal" for Playwright (Guideline #221)
  */
-import { useEffect, useRef } from 'react'
+import { useEffect, useEffectEvent, useRef } from 'react'
 import { cn } from '@ui/cn'
 import { useEditorStore } from '@site/store/store'
 import { useAdminUi } from '@admin/state/adminUi'
@@ -68,28 +68,70 @@ export function SettingsModal() {
   const activeItem = NAV_ITEMS.find((n) => n.id === activeSection) ?? NAV_ITEMS[0]
   const dialogRef = useRef<HTMLDivElement>(null)
   const navRef = useRef<HTMLElement>(null)
-  const triggerRef = useRef<HTMLElement | null>(null)
-
-  // Focus management: capture trigger on open, restore on close (Guideline #225)
-  useEffect(() => {
-    if (open) {
-      if (document.activeElement instanceof HTMLElement) {
-        triggerRef.current = document.activeElement
-      }
-      requestAnimationFrame(() => {
-        navRef.current?.querySelector<HTMLButtonElement>('button')?.focus()
-      })
-    } else {
-      triggerRef.current?.focus()
-      triggerRef.current = null
-    }
-  }, [open])
 
   // Close routes through adminUi — the editor store's `isSettingsOpen`
   // gets cleared by the bridge in `settingsSlice.ts`.
   const handleClose = () => {
     closeAdminUi()
   }
+
+  // Escape closes the modal. Document-level listener, matching `Dialog` and
+  // every other modal shell: a React `onKeyDown` on the dialog only fires
+  // while focus sits inside the dialog subtree, and a click on any
+  // non-focusable spot in the panel (a label, the section header, empty
+  // space) drops focus to `<body>` — outside the subtree — which left Esc
+  // silently dead for the rest of the session.
+  const handleCloseEvent = useEffectEvent(() => handleClose())
+
+  useEffect(() => {
+    if (!open) return undefined
+    function onKeyDown(event: globalThis.KeyboardEvent) {
+      if (event.key !== 'Escape') return
+
+      // Only the topmost layer reacts. Surfaces opened from inside settings
+      // (the media picker behind "Browse library…", confirm dialogs) either
+      // portal to `document.body` or nest in this subtree — both come after
+      // this dialog in document order, and both own Escape until they close.
+      // Without this, one Escape would collapse the whole stack at once.
+      const self = dialogRef.current
+      if (!self) return
+      // `alertdialog` counts too: `Dialog` renders that role instead of
+      // `dialog` when `tone === 'danger'`, which is exactly what a destructive
+      // confirm opened from here would be. Matching only `[role="dialog"]`
+      // would leave the confirm invisible to this check and let one Escape
+      // close it and the settings modal underneath it together.
+      const stackedAbove = Array.from(
+        document.querySelectorAll('[role="dialog"], [role="alertdialog"]'),
+      ).some(
+        (el) =>
+          el !== self &&
+          Boolean(self.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING),
+      )
+      if (stackedAbove) return
+
+      event.preventDefault()
+      event.stopPropagation()
+      handleCloseEvent()
+    }
+    document.addEventListener('keydown', onKeyDown)
+    return () => document.removeEventListener('keydown', onKeyDown)
+  }, [open])
+
+  // Focus management: capture trigger on open, restore on teardown
+  // (Guideline #225). Restoring in the cleanup rather than an `else` branch
+  // is what makes it actually run — all three layouts unmount this modal on
+  // close, so `open` never transitions to `false` while mounted.
+  useEffect(() => {
+    if (!open) return undefined
+    const trigger = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    const raf = requestAnimationFrame(() => {
+      navRef.current?.querySelector<HTMLButtonElement>('button')?.focus()
+    })
+    return () => {
+      cancelAnimationFrame(raf)
+      trigger?.focus()
+    }
+  }, [open])
 
   // Update section in BOTH stores. adminUi for the modal's own selection,
   // editor's settingsSlice for downstream readers (spotlight commands).
@@ -99,14 +141,9 @@ export function SettingsModal() {
     openAdminUi(id)
   }
 
-  // Focus trap + Esc handler
+  // Focus trap. Esc is handled by the document-level listener above, not
+  // here — this only cycles Tab / Shift+Tab within the dialog.
   const handleKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
-    if (e.key === 'Escape') {
-      e.preventDefault()
-      handleClose()
-      return
-    }
-
     if (e.key !== 'Tab') return
 
     const dialog = dialogRef.current
@@ -158,7 +195,12 @@ export function SettingsModal() {
         onKeyDown={handleKeyDown}
         className={s.dialogWrapper}
       >
-        <div className={s.panel} data-accent={activeItem.accent}>
+        {/* tabIndex={-1} keeps the Tab trap honest: clicking a non-focusable
+            spot in the panel (a label, the section header, empty space) would
+            otherwise blur to `<body>` and let the next Tab walk the page
+            behind the modal. Excluded from the focusable query above by its
+            own `:not([tabindex="-1"])` clause. */}
+        <div className={s.panel} tabIndex={-1} data-accent={activeItem.accent}>
           {/* Screen-reader description */}
           <p id="settings-modal-desc" className={s.srOnly}>
             Site-level configuration. Press Escape to close.
@@ -188,11 +230,24 @@ export function SettingsModal() {
 
             <div className={s.railSpring} />
 
-            <div className={s.shortcutFooter} aria-label="Settings keyboard shortcuts">
-              <div className={s.shortcutHint}>
+            {/* The keycap reads as a button — it depresses on :active like every
+                other `Kbd` — so it has to behave like one. It was a hint beside
+                the word "close", which meant clicking it played the press
+                animation and did nothing, and the pointer over the label turned
+                into a text caret. Backdrop click and Esc still work; this just
+                stops the affordance lying about itself. */}
+            <div className={s.shortcutFooter}>
+              <Button
+                variant="ghost"
+                size="sm"
+                align="start"
+                fullWidth
+                onClick={handleClose}
+                className={s.shortcutHint}
+              >
                 <Kbd>Esc</Kbd>
                 <span>close</span>
-              </div>
+              </Button>
             </div>
           </div>
 

@@ -180,9 +180,11 @@ Every admin page picks one of three root layouts from `src/admin/layouts/`. Impo
 | `AdminWorkspaceCanvasLayout` | Content, Data, Media | Canvas chrome (toolbar, sidebar, full-height canvas) WITHOUT site-only modules (no editor store, PropertiesPanel, DnD, or CodeMirror). |
 | `AdminPageLayout` | Plugins, Users, Account, plugin admin pages | Lightweight — toolbar + centered scrollable page body. **Must not import the editor store.** Site name and favicon come from `useSiteSummary` + the `adminUi` Zustand store. |
 
-`AdminCanvasLayout` keeps the real editor shell mounted while `usePersistence()` loads the draft site document. In production it renders the toolbar/chrome first and lazy-loads `AdminCanvasEditorBody` after paint. The body owns the permanent rail, sidebars, canvas, DnD context, `ConfirmDeleteProvider`, `CodeEditorPanel`, first-party module registration, and loop-source registration. Rare modal surfaces such as `ImportHtmlModal` stay behind their own open-state lazy boundary inside the body. Loading states use the same local skeleton vocabulary: the editor-body lazy fallback and the canvas no-site fallback both render `CanvasFrameSkeletonFrame`, and sidebars use compact skeleton rows or blocks. Once the document is in the store, every breakpoint frame mounts immediately — the tree is already in memory, so there is nothing to stagger.
+`AdminCanvasLayout` keeps the real editor shell mounted while `usePersistence()` loads the draft site document. In production it renders the toolbar/chrome first and lazy-loads `AdminCanvasEditorBody` after paint. The body owns the permanent rail, sidebars, canvas, DnD context, `CodeEditorPanel`, first-party module registration, and loop-source registration (the confirm dialog's `ConfirmDeleteProvider` sits once at the admin root in `AuthenticatedAdmin`, so pages that render a layout can ask through it too). Rare modal surfaces such as `ImportHtmlModal` stay behind their own open-state lazy boundary inside the body. Loading states use the same local skeleton vocabulary: the editor-body lazy fallback and the canvas no-site fallback both render `CanvasFrameSkeletonFrame`, and sidebars use compact skeleton rows or blocks. Once the document is in the store, every breakpoint frame mounts immediately — the tree is already in memory, so there is nothing to stagger.
 
 The `adminUi` store (`src/admin/state/adminUi.ts`) is the small cross-shell state store: settings-modal open flag, site-import modal open flag, site name/favicon for the toolbar brand position, and `activeLivePath` — the public path the "Open live page" toolbar button opens. The toolbar renders a compact skeleton while the site identity is loading, then renders the configured site favicon when present; otherwise it shows the site name with the same compact bold typography as the admin navigation. The site name is exposed through the shared tooltip after identity loads. It lives outside `@site/` so `AdminPageLayout` can subscribe without pulling in the 165 KB editor graph. The editor's `settingsSlice` mirrors its state into `adminUi` via a registered bridge so both are always in sync.
+
+Next to the brand the toolbar mounts `BranchChip`, and above its header `BranchContextStrip` (`src/admin/shared/BranchSwitcher/`) — the site-branch switcher and the branch's own actions, driven by `useBranchStore` (`src/admin/state/branchStore.ts`). Both render on every admin route; the strip only while a branch other than main is active. See [`features/branches.md`](features/branches.md).
 
 Canvas chrome state for Content, Data, and Media lives in `src/admin/state/workspaceLayout.ts`, with persistence in `src/admin/state/workspaceLayoutStorage.ts` and `src/admin/state/useWorkspaceLayoutPersistence.ts`. That store owns non-site sidebar widths, right-panel collapsed state, and the Data sidebar toggle. Site editor layout remains site-only: `src/admin/pages/site/hooks/useEditorLayoutPersistence.ts` subscribes to the editor store and delegates the storage mapping to `src/admin/pages/site/layout/siteEditorLayoutPersistence.ts`.
 
@@ -528,29 +530,26 @@ Opens the rail-selected panel:
   - Active tab is held in `explorerPanelTab` (`uiSlice`, `'layers' | 'site' | 'code' | 'media'`) and persisted per-workspace via `siteEditorLayoutPersistence` (stored field `explorerPanelTab`).
 - `FrameworkPanel` — site-level design tokens (the Core Framework) in one panel with **Overview / Colors / Type / Space** tabs. Its "Manage framework" button opens `FrameworkManagerDialog`, a declarative state picker (Full framework / Variables only / None) that reconciles the framework to the chosen target. Sits **above** Selectors in the rail.
 - `SelectorsPanel` — CSS class library
-- `DependenciesPanel` — site package.json / `bun install`
+- `DependenciesPanel` — npm registry browser + the site's `package.json`: search, package pages (README, versions, deps, advisories), install / remove, runtime-import issues. See [`features/dependencies.md`](features/dependencies.md).
 - `PluginEditorPanel` — plugin-provided editor panels
 - `AgentPanel` — AI assistant
 
-Explorer, Selectors, Framework, Dependencies, and plugin panels use the shared
-`Panel` header contract and can be unpinned into one draggable canvas window.
-Switching among those rail items while unpinned replaces the window content
-without redocking it; the same header action docks the active panel back into
-the left sidebar. A keyboard-accessible bottom-right handle resizes the
-floating window in both axes (arrow keys resize by 10px; Shift+arrow by 40px).
-`leftSidebarMode`, the shared floating position, and its user-set width and
-height are persisted through `siteEditorLayoutPersistence` /
-`workspaceLayoutStorage`.
+Every built-in left-rail panel, including AI, can be undocked independently;
+the active plugin panel follows the same host contract. An undocked panel stays open as its own draggable canvas window
+while another rail item can open normally in the left sidebar. Its rail icon is
+muted while detached, and the panel header can dock it back into the sidebar.
+Each floating window has its own keyboard-accessible bottom-right resize handle
+(arrow keys resize by 10px; Shift+arrow by 40px). Built-in panel modes, open
+state, positions, and dimensions are persisted through
+`siteEditorLayoutPersistence` / `workspaceLayoutStorage`.
 
 The outer left-sidebar layout shell intentionally has no `z-index`, so it does
 not trap floating descendants in a sidebar stacking context. Its docked panel
-slot owns layer 85; the undocked slot and independent Agent panel participate
-directly in the shared floating tier at 90.
-
-The AI Assistant is an independent draggable and resizable floating window, so
-it can stay open beside Explorer/Layers or any other hosted panel. Its position,
-dimensions, and open state persist separately across reloads. Properties
-follows the same independent floating-window interaction contract on the right.
+slot owns layer 85; individually undocked panel hosts participate directly in
+the shared floating tier at 90. The AI Assistant is docked by default and uses
+the same per-panel contract as Explorer, Framework, Selectors, and Dependencies.
+Properties follows the equivalent independent floating-window interaction
+contract on the right.
 
 ### Right sidebar (`RightSidebar`)
 

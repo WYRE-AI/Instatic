@@ -24,6 +24,7 @@ import type { Page, SiteDocument } from '@core/page-tree'
 import type { IModuleRegistry } from '@core/module-engine'
 import type { TemplateRenderDataContext } from '@core/templates/dynamicBindings'
 import { buildPageFrame, buildSiteFrame, buildRouteFrame } from '@core/templates/contextFrames'
+import { interpolateTokens } from '@core/templates/tokenInterpolation'
 import { classNamesForClassIds } from '@core/page-tree'
 import {
   normalizeHtmlAttributeName,
@@ -110,6 +111,13 @@ interface PublishPageOptions {
    */
   cssEmission?: 'inline' | 'external'
   /**
+   * How request-dependent nodes render. `'holes'` (default) emits
+   * `<instatic-hole>` placeholders the Layer C runtime hydrates per request;
+   * `'inline'` renders them in place from the supplied `loopData` — for a
+   * one-off render that already carries its request context (branch previews).
+   */
+  dynamicNodes?: 'holes' | 'inline'
+  /**
    * Pre-built site CSS bundle. Required when `cssEmission === 'external'`.
    * Computed once per published-snapshot via `buildSiteCssBundle(site, registry)`.
    */
@@ -148,12 +156,25 @@ interface PublishPageOptions {
    */
   annotateNodeIds?: boolean
   /**
-   * Per-entry SEO overrides (title/description/dates) for a CMS post-type
-   * render — a blog post's own `seoTitle`/`seoDescription`/`pubDate` cells,
-   * threaded in by `renderPublishedDataRowTemplate`. Absent for ordinary
-   * pages, which render exactly as before.
+   * Per-render `<head>` overrides that outrank the site-level settings.
+   *
+   * Post-type entries carry their own authored SEO title / description
+   * (`seoTitle` / `seoDescription`). Those belong to the row, not to the
+   * composed template `Page`, and they must not be written onto
+   * `page.title` — that value also feeds the `{page.title}` binding and has
+   * to keep rendering the entry's real title. The entry render paths pass
+   * them here instead.
    */
-  entryMeta?: EntryMetaOverrides
+  documentMeta?: DocumentMetaOverride
+}
+
+/**
+ * `<head>` values supplied by the caller for this render only. An omitted
+ * (or blank) key falls through to the site settings.
+ */
+export interface DocumentMetaOverride {
+  title?: string
+  description?: string
 }
 
 /**
@@ -304,35 +325,22 @@ function bodyHtmlAttributes(value: unknown): string {
 }
 
 /**
- * Per-entry SEO overrides, supplied when publishing a CMS row through an
- * entry template (e.g. a blog post). Absent for ordinary pages, which fall
- * back to site-wide settings exactly as before.
- */
-export interface EntryMetaOverrides {
-  /** Row-level SEO title. Wins over `settings.metaTitle` — a post's own
-   *  title is more specific than the site-wide default. */
-  seoTitle?: string
-  /** Row-level SEO description. There is no row-level fallback today, so
-   *  this is the ONLY way a post gets its own `<meta name="description">` —
-   *  `settings.metaDescription` is a single site-wide value. */
-  seoDescription?: string
-  /** ISO 8601 date/datetime. Presence is what triggers JSON-LD emission. */
-  datePublished?: string
-  dateModified?: string
-  /** BlogPosting `headline`. Defaults to the resolved page title. */
-  headline?: string
-}
-
-/**
- * `<head>` metadata tags derived from site settings + page (+ optional
- * per-entry overrides for CMS post-type renders).
+ * `<head>` metadata tags derived from the caller's overrides + site
+ * settings + page.
  *
- * - `title` falls back through entryMeta.seoTitle → metaTitle → page.title
- *   → site.name.
- * - `description` falls back through entryMeta.seoDescription →
- *   settings.metaDescription (no row-level fallback existed before this).
- * - `structuredData` is empty unless `entryMeta.datePublished` is set —
- *   ordinary pages never had dates to publish and keep emitting nothing.
+ * - `title` falls back through the caller's `documentMeta.title` (a
+ *   post-type entry's authored SEO title) → metaTitle → page.title →
+ *   site.name.
+ * - `description` falls back through `documentMeta.description` → the
+ *   site-level metaDescription.
+ * - Whichever value wins is then token-interpolated against the render
+ *   context before escaping, so `{currentEntry.*}` / `{page.*}` /
+ *   `{site.*}` resolve per-entry on entry routes. That serves both ways
+ *   of authoring a title: fill each row's SEO field by hand, or write one
+ *   pattern like `{currentEntry.name} | Acme` on the template page. The
+ *   fallback chain picks the raw value first; a token that resolves empty
+ *   does NOT re-trigger the fallback — authors opt into fallbacks with the
+ *   token's own `{...|fallback}` syntax.
  * - URL-typed settings (faviconUrl) are validated by
  *   isSafeUrl() (blocks `javascript:` / `vbscript:` schemes) and then
  *   escapeHtml()'d for safe attribute interpolation.
@@ -344,45 +352,31 @@ interface DocumentMetaTags {
   metaDesc: string
   favicon: string
   langAttr: string
-  structuredData: string
-}
-
-/** Escapes `<` so `</script>` can't break out of the JSON-LD block — the
- * one character JSON.stringify doesn't escape that HTML parsing cares about. */
-function jsonLdSafe(value: unknown): string {
-  return JSON.stringify(value).replace(/</g, '\\u003c')
 }
 
 function buildDocumentMetaTags(
   site: SiteDocument,
   page: Page,
-  entryMeta?: EntryMetaOverrides,
+  context: TemplateRenderDataContext,
+  override: DocumentMetaOverride = {},
 ): DocumentMetaTags {
   const { settings } = site
-  const description = entryMeta?.seoDescription ?? settings.metaDescription
+  const description = override.description || settings.metaDescription
   const metaDesc = description
-    ? `\n  <meta name="description" content="${escapeHtml(description)}">`
+    ? `
+  <meta name="description" content="${escapeHtml(interpolateTokens(description, context))}">`
     : ''
   const favicon =
     settings.faviconUrl && isSafeUrl(settings.faviconUrl)
       ? `\n  <link rel="icon" href="${escapeHtml(settings.faviconUrl)}">`
       : ''
-  const resolvedTitle = entryMeta?.seoTitle ?? settings.metaTitle ?? page.title ?? site.name
-  const structuredData = entryMeta?.datePublished
-    ? `\n  <script type="application/ld+json">${jsonLdSafe({
-        '@context': 'https://schema.org',
-        '@type': 'BlogPosting',
-        headline: entryMeta.headline ?? resolvedTitle,
-        datePublished: entryMeta.datePublished,
-        ...(entryMeta.dateModified ? { dateModified: entryMeta.dateModified } : {}),
-      })}</script>`
-    : ''
   return {
-    pageTitle: escapeHtml(resolvedTitle),
+    pageTitle: escapeHtml(
+      interpolateTokens(override.title || (settings.metaTitle ?? page.title ?? site.name), context),
+    ),
     metaDesc,
     favicon,
     langAttr: escapeHtml(settings.language ?? 'en'),
-    structuredData,
   }
 }
 
@@ -419,7 +413,7 @@ function buildRuntimeAssetsBlock(
   const hasInfiniteLoops = acc.infiniteLoopIds.size > 0
   const loopEndpointBaseUrl = options.loopEndpointBaseUrl ?? '/_instatic/loop/'
   const loopRuntimeScript = hasInfiniteLoops
-    ? `  <script type="module" src="/_instatic/assets/loop-runtime.js" data-instatic-loop-endpoint="${escapeHtml(loopEndpointBaseUrl)}" defer></script>`
+    ? `  <script type="module" src="/_instatic/assets/loop-runtime.js" data-instatic-loop-endpoint="${escapeHtml(loopEndpointBaseUrl)}"></script>`
     : ''
 
   // Hole runtime — injected into <head> (not body-end) so IntersectionObserver
@@ -496,7 +490,6 @@ interface AssembledDocumentParts {
   pageTitle: string
   metaDesc: string
   favicon: string
-  structuredData: string
   styleHeadHtml: string
   importmapTag: string
   headRuntimeScripts: string
@@ -515,7 +508,7 @@ function assembleHtmlDocument(parts: AssembledDocumentParts): string {
     `<head>\n` +
     `  <meta charset="UTF-8">\n` +
     `  <meta name="viewport" content="width=device-width, initial-scale=1.0">${parts.csp}\n` +
-    `  <title>${parts.pageTitle}</title>${parts.metaDesc}${parts.favicon}${parts.structuredData}\n` +
+    `  <title>${parts.pageTitle}</title>${parts.metaDesc}${parts.favicon}\n` +
     parts.styleHeadHtml +
     lineOrEmpty(parts.importmapTag) +
     lineOrEmpty(parts.headRuntimeScripts) +
@@ -554,7 +547,14 @@ export function publishPage(
   // Layer C: classify every node as static or dynamic before walking the tree.
   // Dynamic node ids are threaded into the RenderConfig so renderNode can
   // emit <instatic-hole> placeholders instead of recursing.
-  const dynamicNodeIds = findDynamicNodeIds(page, site, registry)
+  const dynamicNodeIds = options.dynamicNodes === 'inline'
+    ? new Set<string>()
+    : findDynamicNodeIds(page, site, registry)
+
+  // Composed once per page render: the walker reads it through the config,
+  // and the <head> builder interpolates {source.field} tokens in the
+  // title/description against the same frames.
+  const templateContext = composeTemplateContext(page, site, options.templateContext)
 
   // Read-only inputs of this render pass. A renderer that needs a different
   // page (VC ref) or template frame (loop iteration) derives a child config —
@@ -564,7 +564,7 @@ export function publishPage(
     site,
     registry,
     breakpointId: options.breakpointId,
-    templateContext: composeTemplateContext(page, site, options.templateContext),
+    templateContext,
     loopData: options.loopData,
     mediaAssets: options.mediaAssets,
     dynamicNodeIds: dynamicNodeIds.size > 0 ? dynamicNodeIds : undefined,
@@ -612,7 +612,7 @@ export function publishPage(
     acc.cssMap,
   )
 
-  const meta = buildDocumentMetaTags(site, page, options.entryMeta)
+  const meta = buildDocumentMetaTags(site, page, templateContext, options.documentMeta)
   const runtime = buildRuntimeAssetsBlock(options, acc)
   const csp = buildContentSecurityPolicy(runtime.anyScriptTag, runtime.importmap, acc.cspSources)
 
@@ -622,7 +622,6 @@ export function publishPage(
     pageTitle: meta.pageTitle,
     metaDesc: meta.metaDesc,
     favicon: meta.favicon,
-    structuredData: meta.structuredData,
     styleHeadHtml,
     importmapTag: runtime.importmapTag,
     headRuntimeScripts: runtime.headRuntimeScripts,

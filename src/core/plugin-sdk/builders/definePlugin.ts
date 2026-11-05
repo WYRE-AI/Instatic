@@ -13,16 +13,14 @@
  *     permissions: [permissions.modulesRegister, permissions.visualComponentsRegister],
  *     modules: [callout],
  *     pack,
- *     // Optional entry-point hooks — pure objects, not file paths.
- *     // The build script wires them into the runtime zip layout.
- *     editor:   () => import(`./editor`),
- *     server:   () => import(`./server`),
- *     frontend: () => import(`./frontend/tracker`),
  *   })
  *
  * The return value is the host's runtime `PluginManifest` plus the bundled
- * builder objects. The build script (PR 1.1, see scripts/build-plugin.ts)
- * uses those builder objects to emit the final zip.
+ * builder objects. The build CLI (`cli/build.ts`) uses those builder
+ * objects to emit the final zip. Entrypoints are NOT declared here —
+ * `instatic-plugin build` auto-wires them into the emitted `plugin.json`
+ * from the source layout (`server/index.ts`, `editor/index.ts`, top-level
+ * `frontend/*.ts`, admin app entries).
  */
 
 import { PLUGIN_API_VERSION } from '../types'
@@ -85,12 +83,9 @@ export interface DefinePluginConfig {
   resources?: PluginResource[]
 
   /**
-   * Per-table allowlist for the `cms.content.*` SDK surface. Required
-   * (non-empty) when `permissions` includes any of `cms.content.read` /
-   * `cms.content.write` / `cms.content.publish` / `cms.content.delete` —
-   * `parsePluginManifest` fails closed otherwise. Each entry's `modes[]`
-   * must be covered by the matching `cms.content.*` permission (a `write`
-   * mode with no `cms.content.write` permission is rejected at parse time).
+   * Per-table allowlist for the `cms.content.*` surface. Required by the
+   * manifest parser whenever any `cms.content.*` permission is declared;
+   * the host fails closed at runtime for tables/modes not listed here.
    */
   contentAccess?: ContentAccessEntry[]
 
@@ -189,6 +184,9 @@ export function definePlugin(config: DefinePluginConfig): PluginDefinition {
     ...(config.networkAllowedHosts
       ? { networkAllowedHosts: [...config.networkAllowedHosts] }
       : {}),
+    ...(config.contentAccess
+      ? { contentAccess: config.contentAccess.map((entry) => ({ ...entry, modes: [...entry.modes] })) }
+      : {}),
     ...(config.settings !== undefined ? { settings: config.settings } : {}),
     ...(config.author !== undefined ? { author: config.author } : {}),
     ...(config.license !== undefined ? { license: config.license } : {}),
@@ -198,9 +196,6 @@ export function definePlugin(config: DefinePluginConfig): PluginDefinition {
     ...(config.icon !== undefined ? { icon: config.icon } : {}),
     ...(config.frontend !== undefined
       ? { frontend: { assets: config.frontend.assets.map((asset) => ({ ...asset })) } }
-      : {}),
-    ...(config.contentAccess
-      ? { contentAccess: config.contentAccess.map((entry) => ({ ...entry, modes: [...entry.modes] })) }
       : {}),
   }
   return {

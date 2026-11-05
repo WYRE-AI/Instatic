@@ -7,7 +7,6 @@ import {
   publishPage,
   type RenderConfig,
   type RenderAccumulators,
-  type EntryMetaOverrides,
 } from '@core/publisher'
 import type { ModuleDefinition, PropertySchema } from '@core/module-engine'
 import {
@@ -1032,105 +1031,73 @@ describe('publishPage', () => {
     expect(html).toContain('&lt;script&gt;')
   })
 
-  // ─── entryMeta overrides (row-level SEO title/description/JSON-LD) ────────
-
-  it('entryMeta.seoTitle wins over site metaTitle', () => {
+  // Token interpolation in <head> meta — entry routes carry the published row
+  // on the context's entryStack (seeded by renderPublishedDataRowTemplate), so
+  // `{currentEntry.*}` resolves to per-entry SEO titles/descriptions through
+  // the same engine dynamic text bindings use.
+  it('interpolates {currentEntry.*} tokens in metaTitle on an entry route', () => {
     const proj = makeSite({
-      settings: { ...makeSite().settings, metaTitle: 'Site Default Title' },
+      settings: { ...makeSite().settings, metaTitle: '{currentEntry.name} | Acme Agency' },
     })
     const page = makePage({ root: { moduleId: 'base.text', props: { text: 'Hi' } } })
-    const entryMeta: EntryMetaOverrides = { seoTitle: 'My Post SEO Title' }
-    const { html } = publishPage(page, proj, registry, { entryMeta })
-    expect(html).toContain('<title>My Post SEO Title</title>')
-    expect(html).not.toContain('Site Default Title')
+    const { html } = publishPage(page, proj, registry, {
+      templateContext: {
+        entryStack: [{ id: 'row-1', fields: { name: 'Our Discovery Process' } }],
+      },
+    })
+    expect(html).toContain('<title>Our Discovery Process | Acme Agency</title>')
   })
 
-  it('falls back to page.title when entryMeta has no seoTitle', () => {
-    const page = makePage({ root: { moduleId: 'base.text', props: { text: 'Hi' } } })
-    const { html } = publishPage(page, site, registry, { entryMeta: {} })
-    expect(html).toContain('<title>Test Page</title>')
-  })
-
-  it('entryMeta.seoDescription renders a meta description tag', () => {
-    const page = makePage({ root: { moduleId: 'base.text', props: { text: 'Hi' } } })
-    const entryMeta: EntryMetaOverrides = { seoDescription: 'A post about testing.' }
-    const { html } = publishPage(page, site, registry, { entryMeta })
-    expect(html).toContain('<meta name="description" content="A post about testing.">')
-  })
-
-  it('entryMeta.seoDescription wins over site metaDescription', () => {
+  it('interpolates {currentEntry.*} tokens in the meta description', () => {
     const proj = makeSite({
-      settings: { ...makeSite().settings, metaDescription: 'Site-wide description' },
+      settings: { ...makeSite().settings, metaDescription: '{currentEntry.summary}' },
     })
     const page = makePage({ root: { moduleId: 'base.text', props: { text: 'Hi' } } })
-    const entryMeta: EntryMetaOverrides = { seoDescription: 'Row-level description' }
-    const { html } = publishPage(page, proj, registry, { entryMeta })
-    expect(html).toContain('<meta name="description" content="Row-level description">')
-    expect(html).not.toContain('Site-wide description')
+    const { html } = publishPage(page, proj, registry, {
+      templateContext: {
+        entryStack: [{ id: 'row-1', fields: { summary: 'How we run discovery.' } }],
+      },
+    })
+    expect(html).toContain('<meta name="description" content="How we run discovery.">')
   })
 
-  it('no meta description tag when neither entryMeta nor site settings provide one', () => {
+  it('entry tokens in metaTitle degrade gracefully on a plain page (no leaked placeholders)', () => {
+    const proj = makeSite({
+      settings: { ...makeSite().settings, metaTitle: '{currentEntry.name|Home} | Acme Agency' },
+    })
     const page = makePage({ root: { moduleId: 'base.text', props: { text: 'Hi' } } })
-    const { html } = publishPage(page, site, registry)
-    expect(html).not.toContain('<meta name="description"')
+    // No templateContext → empty entry stack → the token's own |fallback applies.
+    const { html } = publishPage(page, proj, registry)
+    expect(html).toContain('<title>Home | Acme Agency</title>')
+    expect(html).not.toContain('{currentEntry')
   })
 
-  it('XSS: escapes entryMeta.seoTitle and seoDescription', () => {
+  it('interpolates tokens in the page.title fallback of the <title> chain', () => {
+    // No metaTitle set → the chain picks page.title, which may itself carry
+    // tokens (entry templates title themselves per-entry this way).
     const page = makePage({ root: { moduleId: 'base.text', props: { text: 'Hi' } } })
-    const entryMeta: EntryMetaOverrides = {
-      seoTitle: '<script>alert(1)</script>',
-      seoDescription: '"><script>alert(2)</script>',
-    }
-    const { html } = publishPage(page, site, registry, { entryMeta })
+    page.title = '{currentEntry.name} — {site.name}'
+    const { html } = publishPage(page, makeSite(), registry, {
+      templateContext: { entryStack: [{ id: 'row-1', fields: { name: 'Launch Week' } }] },
+    })
+    expect(html).toContain('<title>Launch Week — Test SiteDocument</title>')
+  })
+
+  it('XSS: interpolated token values are escaped in <title> and description', () => {
+    const proj = makeSite({
+      settings: {
+        ...makeSite().settings,
+        metaTitle: '{currentEntry.name}',
+        metaDescription: '{currentEntry.name}',
+      },
+    })
+    const page = makePage({ root: { moduleId: 'base.text', props: { text: 'Hi' } } })
+    const { html } = publishPage(page, proj, registry, {
+      templateContext: {
+        entryStack: [{ id: 'row-1', fields: { name: '<script>alert(1)</script>"' } }],
+      },
+    })
     expect(html).not.toContain('<script>alert(1)')
-    expect(html).not.toContain('<script>alert(2)')
-    expect(html).toContain('&lt;script&gt;alert(1)')
-  })
-
-  it('emits BlogPosting JSON-LD when entryMeta.datePublished is set', () => {
-    const page = makePage({ root: { moduleId: 'base.text', props: { text: 'Hi' } } })
-    const entryMeta: EntryMetaOverrides = {
-      seoTitle: 'My Post',
-      datePublished: '2026-09-11',
-      dateModified: '2026-09-12',
-    }
-    const { html } = publishPage(page, site, registry, { entryMeta })
-    expect(html).toContain('<script type="application/ld+json">')
-    expect(html).toContain('"@type":"BlogPosting"')
-    expect(html).toContain('"headline":"My Post"')
-    expect(html).toContain('"datePublished":"2026-09-11"')
-    expect(html).toContain('"dateModified":"2026-09-12"')
-  })
-
-  it('omits dateModified from JSON-LD when not provided', () => {
-    const page = makePage({ root: { moduleId: 'base.text', props: { text: 'Hi' } } })
-    const entryMeta: EntryMetaOverrides = { datePublished: '2026-09-11' }
-    const { html } = publishPage(page, site, registry, { entryMeta })
-    expect(html).toContain('"datePublished":"2026-09-11"')
-    expect(html).not.toContain('dateModified')
-  })
-
-  it('emits no JSON-LD when entryMeta.datePublished is absent (ordinary pages unaffected)', () => {
-    const page = makePage({ root: { moduleId: 'base.text', props: { text: 'Hi' } } })
-    const { html } = publishPage(page, site, registry)
-    expect(html).not.toContain('application/ld+json')
-  })
-
-  it('JSON-LD headline falls back to the resolved title when entryMeta.headline is absent', () => {
-    const page = makePage({ root: { moduleId: 'base.text', props: { text: 'Hi' } } })
-    const entryMeta: EntryMetaOverrides = { seoTitle: 'Resolved Title', datePublished: '2026-09-11' }
-    const { html } = publishPage(page, site, registry, { entryMeta })
-    expect(html).toContain('"headline":"Resolved Title"')
-  })
-
-  it('XSS: JSON-LD escapes "<" so a malicious field cannot close the script tag', () => {
-    const page = makePage({ root: { moduleId: 'base.text', props: { text: 'Hi' } } })
-    const entryMeta: EntryMetaOverrides = {
-      headline: '</script><script>alert(1)</script>',
-      datePublished: '2026-09-11',
-    }
-    const { html } = publishPage(page, site, registry, { entryMeta })
-    expect(html).not.toContain('</script><script>alert(1)</script>')
-    expect(html).toContain('\\u003c/script>\\u003cscript>alert(1)\\u003c/script>')
+    expect(html).toContain('<title>&lt;script&gt;alert(1)&lt;/script&gt;&quot;</title>')
   })
 })

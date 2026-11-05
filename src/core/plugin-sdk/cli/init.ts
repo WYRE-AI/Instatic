@@ -128,20 +128,22 @@ export default definePlugin({
     permissions.cmsContentWrite,
   ],
 
-  // Per-table allowlist for the cms.content.* surface. The install
-  // consent dialog renders this verbatim so the operator sees the exact
-  // set of tables your plugin can touch before approving the install.
+  // Per-table allowlist for the cms.content.* surface — the operator can
+  // review exactly which tables your plugin touches before installing.
+  // Declare concrete slugs, or '@own-created' to cover tables your plugin
+  // creates at runtime via api.cms.content.tables.create(...).
   contentAccess: [
     { table: 'pages', modes: ['read', 'write'] },
   ],
 
-  entrypoints: { server: 'server/index.js' },
+  // No entrypoints here — \`instatic-plugin build\` auto-wires
+  // \`entrypoints.server\` because \`server/index.ts\` exists.
 })
 `
 }
 
 function serverEntryTemplate({ pluginName }: InitTemplate): string {
-  return `import type { ServerPluginModule } from '@instatic/plugin-sdk'
+  return `import type { ServerPluginModule } from '@core/plugin-sdk'
 
 /**
  * Server entrypoint for ${pluginName}.
