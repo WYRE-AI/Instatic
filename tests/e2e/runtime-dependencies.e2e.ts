@@ -109,6 +109,56 @@ document.body.dataset.site014MobileDependencyType = typeof leftPad
     await expectMobileDependencyPanelContained(page, dependenciesPanel, addButton)
 
     await addButton.click({ trial: true })
+
+    await test.step('clear the unresolved import so later specs can publish', async () => {
+      // The unresolved `left-pad` import trips the Publish safety gate for
+      // every later spec sharing this site — rewrite the script without it.
+      await openCodePanel(page)
+      // Reopening the panel starts with no file selected — pick the script.
+      await page.getByRole('button', { name: new RegExp(`site014-mobile-${suffix}`) }).first().click()
+      const editor = page.locator('[data-codemirror-container] .cm-content')
+      await expect(editor).toBeVisible({ timeout: 15_000 })
+      await editor.click()
+      await page.keyboard.press('ControlOrMeta+a')
+      await page.keyboard.insertText("document.body.dataset.site014MobileDependencyType = 'resolved'\n")
+      await expect(page.getByLabel('Script imports').getByText(mobilePackage)).toHaveCount(0)
+    })
+  })
+
+  test('browses the registry and installs from a package page (SITE-014)', async ({ page }) => {
+    test.setTimeout(120_000)
+
+    await login(page)
+    await openSiteEditor(page)
+    await page.getByRole('button', { name: 'Open Dependencies panel' }).click()
+    const dependenciesPanel = page.getByTestId('dependencies-panel')
+    await expect(dependenciesPanel).toBeVisible()
+
+    // Search goes through the server-side registry proxy, never the browser.
+    // `pad-left` is tiny, live and not deprecated (deprecated packages are
+    // hidden from search), so the index lists it by name.
+    const search = dependenciesPanel.getByTestId('registry-search')
+    await search.fill('pad-left')
+    const result = dependenciesPanel.getByTestId('registry-result-pad-left')
+    await expect(result).toBeVisible({ timeout: 20_000 })
+    await result.click()
+
+    const detail = dependenciesPanel.getByTestId('package-detail-pad-left')
+    await expect(detail).toBeVisible()
+    await expect(detail.getByTestId('package-readme')).toBeVisible({ timeout: 20_000 })
+
+    await detail.getByTestId('dependency-install-pad-left').click()
+    await expect(detail.getByTestId('dependency-locked-pad-left')).toBeVisible({ timeout: 75_000 })
+
+    await test.step('remove it again so later specs start from the same manifest', async () => {
+      // Removing a dependency always confirms: it is a manifest change, not a
+      // canvas edit, so it does not defer to the confirm-before-delete preference.
+      await detail.getByTestId('dependency-remove-pad-left').click()
+      const confirm = page.getByRole('alertdialog', { name: 'Remove pad-left?' })
+      await expect(confirm).toBeVisible()
+      await confirm.getByRole('button', { name: 'Remove' }).click()
+      await expect(detail.getByTestId('dependency-install-pad-left')).toBeVisible()
+    })
   })
 })
 

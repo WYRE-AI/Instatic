@@ -8,8 +8,10 @@ import type {
   PluginResource,
 } from '@core/plugin-sdk'
 import {
+  CONTENT_ACCESS_MODE_PERMISSIONS,
   isCompatiblePluginApiVersion,
   MIN_SUPPORTED_PLUGIN_API_VERSION,
+  OWN_CREATED_TABLES_MARKER,
   PLUGIN_API_VERSION,
   PLUGIN_PERMISSION_VALUES,
   permissionLabel as sdkPermissionLabel,
@@ -272,12 +274,16 @@ const manifestSchema = Type.Object({
     Type.String({ pattern: NETWORK_HOST_PATTERN.source, maxLength: 253 }),
     { maxItems: 50 },
   )),
-  // Per-table allowlist for the `api.cms.content.*` surface. The host
-  // additionally enforces that each `mode` matches a granted permission
-  // at install time (`assertContentAccessCoherent` below).
+  // Per-table allowlist for the `api.cms.content.*` surface; each mode must
+  // match a granted permission (`assertContentAccessCoherent` below). `table`
+  // is a slug or the `@own-created` marker (see OWN_CREATED_TABLES_MARKER) —
+  // the slug pattern's leading-letter rule reserves the `@` namespace.
   contentAccess: Type.Optional(Type.Array(
     Type.Object({
-      table: Type.String({ pattern: MANIFEST_SLUG_PATTERN.source, maxLength: 80 }),
+      table: Type.Union([
+        Type.Literal(OWN_CREATED_TABLES_MARKER),
+        Type.String({ pattern: MANIFEST_SLUG_PATTERN.source, maxLength: 80 }),
+      ]),
       modes: Type.Array(
         Type.Union([
           Type.Literal('read'),
@@ -557,17 +563,14 @@ export function parsePluginManifest(input: unknown): PluginManifest {
   // Fail-closed defense: a plugin that requests `cms.content.write` but
   // omits the allowlist would otherwise silently fail every write at the
   // host bridge with a cryptic per-call error.
-  const contentPerms = data.permissions.filter((p) =>
-    p === 'cms.content.read' ||
-    p === 'cms.content.write' ||
-    p === 'cms.content.publish' ||
-    p === 'cms.content.delete',
-  )
+  const contentPermissions = new Set<PluginPermission>(Object.values(CONTENT_ACCESS_MODE_PERMISSIONS))
+  const contentPerms = data.permissions.filter((p) => contentPermissions.has(p))
   const contentAccess = data.contentAccess ?? []
   if (contentPerms.length > 0 && contentAccess.length === 0) {
     throw new Error(
       `Invalid plugin manifest: \`contentAccess\` is required when any \`cms.content.*\` ` +
-      `permission is granted. List the tables the plugin can touch.`,
+      `permission is granted. List the tables the plugin can touch, or declare ` +
+      `\`{ "table": "${OWN_CREATED_TABLES_MARKER}" }\` for tables the plugin creates at runtime.`,
     )
   }
   if (contentAccess.length > 0) {
@@ -585,11 +588,7 @@ export function parsePluginManifest(input: unknown): PluginManifest {
         }
         seenModes.add(mode)
 
-        const requiredPermission: PluginPermission =
-          mode === 'read' ? 'cms.content.read' :
-          mode === 'write' ? 'cms.content.write' :
-          mode === 'publish' ? 'cms.content.publish' :
-          'cms.content.delete'
+        const requiredPermission = CONTENT_ACCESS_MODE_PERMISSIONS[mode]
 
         if (!data.permissions.includes(requiredPermission)) {
           throw new Error(
